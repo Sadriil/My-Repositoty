@@ -1,0 +1,75 @@
+name: Build macOS application
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-macos.yml'
+      - 'stone-app/desktop.py'
+      - 'stone-app/macos/build.sh'
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: stone-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt pyinstaller
+      - name: Check architecture and Tk
+        run: |
+          test "$(uname -m)" = '${{ matrix.arch }}'
+          python -c 'import tkinter; print(tkinter.TkVersion)'
+      - name: Run calculation and access tests
+        run: python -m unittest -v test_app
+      - name: Build app and DMG
+        run: bash macos/build.sh
+      - name: Test packaged app
+        run: |
+          'dist/Stone Production.app/Contents/MacOS/Stone Production' --smoke-test --report "$RUNNER_TEMP/stone-smoke.json"
+          python -c 'import json,os; assert json.load(open(os.environ["RUNNER_TEMP"]+"/stone-smoke.json"))["ok"]'
+          codesign --verify --deep --strict 'dist/Stone Production.app'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stone-Production-macOS-${{ matrix.arch }}
+          path: stone-app/macos-output/*
+          if-no-files-found: error
+  release:
+    name: Publish downloadable installers
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Stone-Production-macOS-*
+          merge-multiple: true
+          path: installers
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_TAG: macos-build-${{ github.run_number }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          if ! gh release view "$BUILD_TAG" >/dev/null 2>&1; then
+            gh release create "$BUILD_TAG" --target "$BUILD_SHA" --title 'Stone Production для macOS' --notes 'Локальный калькулятор. arm64: Mac с Apple Silicon. x86_64: Mac с Intel. Откройте DMG и перенесите приложение в Applications. Python устанавливать не нужно. Приложение без сертификата Apple и нотариализации: macOS может потребовать разрешение запуска в настройках безопасности.'
+          fi
+          gh release upload "$BUILD_TAG" installers/* --clobber

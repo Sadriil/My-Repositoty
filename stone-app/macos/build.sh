@@ -14,3 +14,8 @@ python3 -m PyInstaller --noconfirm --clean --windowed --name 'Stone Production' 
     --collect-submodules uvicorn desktop.py
 mkdir -p macos-output
 ditto -c -k --sequesterRsrc --keepParent 'dist/Stone Production.app' "macos-output/Stone-Production-macOS-$(uname -m).zip"
+STAGING_DIR="$(mktemp -d)"
+trap 'rm -rf "$STAGING_DIR"' EXIT
+ditto 'dist/Stone Production.app' "$STAGING_DIR/Stone Production.app"
+ln -s /Applications "$STAGING_DIR/Applications"
+hdiutil create -volname 'Stone Production' -srcfolder "$STAGING_DIR" -ov -format UDZO "macos-output/Stone-Production-macOS-$(uname -m).dmg"

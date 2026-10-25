@@ -120,5 +120,58 @@ def main():
     root.mainloop()
 
 
+def smoke_test(report):
+    import tempfile
+    import time
+    import json
+    import urllib.request
+    import urllib.error
+    os.environ['STONE_DATA_DIR'] = tempfile.mkdtemp(prefix='stone-app-smoke-')
+    import uvicorn
+    from app import app, ROOT
+    assert (ROOT/'static/index.html').is_file()
+    assert (ROOT/'data/catalog.json').is_file()
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    url = f'http://127.0.0.1:{sock.getsockname()[1]}'
+    server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False))
+    thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
+    thread.start()
+    try:
+        for _ in range(200):
+            if server.started:
+                break
+            if not thread.is_alive():
+                raise RuntimeError('Server stopped')
+            time.sleep(.05)
+        assert server.started, 'Server did not start'
+        def read(path):
+            with urllib.request.urlopen(url+path, timeout=10) as r:
+                return r.read()
+        assert b'STONE' in read('/')
+        assert b'function' in read('/static/app.js')
+        catalog = json.loads(read('/api/catalog'))
+        assert len(catalog['materials']) == 668
+        req = urllib.request.Request(url+'/api/quote', data=json.dumps({'material':catalog['materials'][0]['id'], 'parts':[{'length':1000,'width':600}], 'installation':False}).encode(), headers={'Content-Type':'application/json'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            quote = json.load(r)
+        assert quote['total'] == 28347.5
+        assert 'internal' not in quote
+        try:
+            read('/api/admin/settings')
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+        else:
+            raise AssertionError('Admin route is exposed')
+        Path(report).write_text(json.dumps({'ok':True,'materials':668,'quote':quote['total']}))
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        sock.close()
+
+
 if __name__ == '__main__':
-    main()
+    if '--smoke-test' in sys.argv:
+        smoke_test(sys.argv[sys.argv.index('--report')+1])
+    else:
+        main()
