@@ -2,3 +2,7 @@ runtime/
 __pycache__/
 .venv/
 .env
+build/
+dist/
+macos-output/
+*.spec
